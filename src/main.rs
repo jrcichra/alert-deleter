@@ -27,15 +27,21 @@ struct Args {
 
 #[derive(Debug, Deserialize)]
 struct Alert {
-    status: String,
+    fingerprint: String,
+    status: AlertStatus,
     labels: Labels,
 }
 
 #[derive(Debug, Deserialize)]
+struct AlertStatus {
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct Labels {
-    pod: String,
-    namespace: String,
-    alertname: Option<String>, // This is optional as some alerts might not have this label
+    alertname: String,
+    pod: Option<String>,       // Pod might be missing in some alerts
+    namespace: Option<String>, // Namespace might be missing in some alerts
 }
 
 async fn get_alerts(alertmanager_url: &str) -> Result<Vec<Alert>, Box<dyn Error>> {
@@ -80,15 +86,16 @@ async fn main() -> Result<()> {
         match get_alerts(&args.alertmanager_url).await {
             Ok(alerts) => {
                 for alert in alerts {
-                    if alert.status == "firing" {
-                        if let Some(alertname) = &alert.labels.alertname {
-                            if alertname == &args.alert_name {
-                                let pod = &alert.labels.pod;
-                                let namespace = &alert.labels.namespace;
-                                if let Err(err) = delete_pod(pod, namespace).await {
-                                    error!("Failed to delete pod: {}", err);
-                                }
+                    // Only check for alerts that match the provided alert name
+                    if alert.labels.alertname == args.alert_name && alert.status.state == "active" {
+                        if let (Some(pod), Some(namespace)) =
+                            (&alert.labels.pod, &alert.labels.namespace)
+                        {
+                            if let Err(err) = delete_pod(pod, namespace).await {
+                                error!("Failed to delete pod: {}", err);
                             }
+                        } else {
+                            error!("Alert {} is missing pod or namespace", alert.fingerprint);
                         }
                     }
                 }
