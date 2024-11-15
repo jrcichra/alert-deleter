@@ -17,8 +17,8 @@ struct Args {
     alertmanager_url: String,
 
     /// Alert name to match against the 'alertname' label
-    #[clap(short, long, env)]
-    alert_name: String,
+    #[clap(short, long, env, value_delimiter = ',')]
+    alert_names: Vec<String>,
 
     /// Interval in seconds to check for alerts
     #[clap(short, long, env, default_value_t = 60)]
@@ -87,7 +87,9 @@ async fn main() -> Result<()> {
             Ok(alerts) => {
                 for alert in alerts {
                     // Only check for alerts that match the provided alert name
-                    if alert.labels.alertname == args.alert_name && alert.status.state == "active" {
+                    if args.alert_names.contains(&alert.labels.alertname)
+                        && alert.status.state == "active"
+                    {
                         if let (Some(pod), Some(namespace)) =
                             (&alert.labels.pod, &alert.labels.namespace)
                         {
