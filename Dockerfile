@@ -6,5 +6,4 @@ COPY target/x86_64-unknown-linux-gnu/release/alert-deleter alert-deleter-amd64
 FROM gcr.io/distroless/cc-debian12:nonroot
 ARG TARGETARCH
 COPY --from=rename /app/alert-deleter-$TARGETARCH /app/alert-deleter
-USER 65534
 ENTRYPOINT [ "/app/alert-deleter" ]
