@@ -72,11 +72,8 @@ async fn get_alerts(alertmanager_url: &str) -> Result<Vec<Alert>, Box<dyn Error>
 async fn delete_pod(client: Client, pod: &str, namespace: &str) -> Result<(), Box<dyn Error>> {
     let pods: Api<Pod> = Api::namespaced(client, namespace);
     let dp = DeleteParams::default();
-
     pods.delete(pod, &dp).await?;
-
     info!("Deleted pod {} in namespace {}", pod, namespace);
-
     Ok(())
 }
 
