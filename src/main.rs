@@ -2,10 +2,11 @@ use anyhow::Result;
 use clap::Parser;
 use k8s_openapi::api::core::v1::Pod;
 use kube::{api::DeleteParams, Api, Client};
-use log::{error, info};
+use kube_leader_election::{LeaseLock, LeaseLockParams};
+use log::{error, info, warn};
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
-use std::error::Error;
+use std::{error::Error, process};
 use tokio::time::{interval, Duration};
 
 /// Struct for command line arguments using clap
@@ -23,6 +24,18 @@ struct Args {
     /// Interval in seconds to check for alerts
     #[clap(short, long, env, default_value_t = 60)]
     interval: u64,
+
+    /// Pod name for leader election
+    #[clap(long, env)]
+    pod_name: String,
+
+    /// Name for lease
+    #[clap(short, long, env, default_value = "alert-deleter")]
+    lease_name: String,
+
+    /// Duration for lease
+    #[clap(short, long, env, default_value_t = 10)]
+    lease_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,8 +69,7 @@ async fn get_alerts(alertmanager_url: &str) -> Result<Vec<Alert>, Box<dyn Error>
     Ok(resp)
 }
 
-async fn delete_pod(pod: &str, namespace: &str) -> Result<(), Box<dyn Error>> {
-    let client = Client::try_default().await?;
+async fn delete_pod(client: Client, pod: &str, namespace: &str) -> Result<(), Box<dyn Error>> {
     let pods: Api<Pod> = Api::namespaced(client, namespace);
     let dp = DeleteParams::default();
 
@@ -71,18 +83,55 @@ async fn delete_pod(pod: &str, namespace: &str) -> Result<(), Box<dyn Error>> {
 #[tokio::main]
 async fn main() -> Result<()> {
     simple_logger::init_with_level(log::Level::Info)?;
-
     // Parse command line arguments
     let args = Args::parse();
-
     // Interval to poll for alerts
     let mut interval_timer = interval(Duration::from_secs(args.interval));
 
+    let client = Client::try_default().await?;
+    let namespace = client.default_namespace();
+    let leadership = LeaseLock::new(
+        client.clone(),
+        namespace,
+        LeaseLockParams {
+            holder_id: args.pod_name,
+            lease_name: args.lease_name,
+            lease_ttl: Duration::from_secs(args.lease_secs),
+        },
+    );
+
+    info!("waiting for lock...");
+    loop {
+        let lease = leadership.try_acquire_or_renew().await?;
+        if lease.acquired_lease {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    info!("acquired lock!");
+
+    // start a background thread to see if we're still leader
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let lease = match leadership.try_acquire_or_renew().await {
+                Result::Ok(l) => l,
+                Err(e) => {
+                    warn!("background lease error: {}", e);
+                    continue;
+                }
+            };
+            if !lease.acquired_lease {
+                info!("lost lease, exiting...");
+                process::exit(1);
+            }
+        }
+    });
+
+    // main loop
     loop {
         interval_timer.tick().await;
-
         info!("Checking for alerts...");
-
         match get_alerts(&args.alertmanager_url).await {
             Ok(alerts) => {
                 for alert in alerts {
@@ -93,7 +142,7 @@ async fn main() -> Result<()> {
                         if let (Some(pod), Some(namespace)) =
                             (&alert.labels.pod, &alert.labels.namespace)
                         {
-                            if let Err(err) = delete_pod(pod, namespace).await {
+                            if let Err(err) = delete_pod(client.clone(), pod, namespace).await {
                                 error!("Failed to delete pod: {}", err);
                             }
                         } else {
