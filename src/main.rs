@@ -5,7 +5,7 @@ use kube::{api::DeleteParams, Api, Client};
 use kube_leader_election::{LeaseLock, LeaseLockParams};
 use log::{error, info, warn};
 use reqwest::Client as HttpClient;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{error::Error, process};
 use tokio::time::{interval, Duration};
 
@@ -36,25 +36,30 @@ struct Args {
     /// Duration for lease
     #[clap(short, long, env, default_value_t = 10)]
     lease_secs: u64,
+
+    /// Webhook URL to send alerts to
+    #[clap(long, env)]
+    webhook_url: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Alert {
     fingerprint: String,
     status: AlertStatus,
     labels: Labels,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct AlertStatus {
     state: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Labels {
     alertname: String,
     pod: Option<String>,       // Pod might be missing in some alerts
     namespace: Option<String>, // Namespace might be missing in some alerts
+    action: Option<String>,    // Action to take: delete_pod or webhook
 }
 
 async fn get_alerts(alertmanager_url: &str) -> Result<Vec<Alert>, Box<dyn Error>> {
@@ -136,14 +141,45 @@ async fn main() -> Result<()> {
                     if args.alert_names.contains(&alert.labels.alertname)
                         && alert.status.state == "active"
                     {
-                        if let (Some(pod), Some(namespace)) =
-                            (&alert.labels.pod, &alert.labels.namespace)
-                        {
-                            if let Err(err) = delete_pod(client.clone(), pod, namespace).await {
-                                error!("Failed to delete pod: {}", err);
+                        // Check for action label - default to delete_pod if not specified
+                        let action = alert.labels.action.as_deref().unwrap_or("delete_pod");
+
+                        match action {
+                            "delete_pod" => {
+                                if let (Some(pod), Some(namespace)) =
+                                    (&alert.labels.pod, &alert.labels.namespace)
+                                {
+                                    if let Err(err) =
+                                        delete_pod(client.clone(), pod, namespace).await
+                                    {
+                                        error!("Failed to delete pod: {}", err);
+                                    }
+                                } else {
+                                    error!(
+                                        "Alert {} is missing pod or namespace",
+                                        alert.fingerprint
+                                    );
+                                }
                             }
-                        } else {
-                            error!("Alert {} is missing pod or namespace", alert.fingerprint);
+                            "webhook" => {
+                                if let Some(webhook_url) = &args.webhook_url {
+                                    // Send webhook with alert data
+                                    let client = HttpClient::new();
+                                    let resp = client.post(webhook_url).json(&alert).send().await;
+                                    match resp {
+                                        Ok(_) => {
+                                            info!("Sent webhook for alert {}", alert.fingerprint)
+                                        }
+                                        Err(err) => error!("Failed to send webhook: {}", err),
+                                    }
+                                } else {
+                                    error!("Webhook URL not configured but action is webhook");
+                                }
+                            }
+                            _ => {
+                                // Unknown action, log and ignore
+                                warn!("Unknown action '{}' in alert {}", action, alert.fingerprint);
+                            }
                         }
                     }
                 }
