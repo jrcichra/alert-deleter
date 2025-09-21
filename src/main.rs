@@ -6,7 +6,7 @@ use kube_leader_election::{LeaseLock, LeaseLockParams};
 use log::{error, info, warn};
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use std::{error::Error, process};
+use std::{collections::HashMap, error::Error, process, time::Instant};
 use tokio::time::{interval, Duration};
 
 /// Struct for command line arguments using clap
@@ -36,6 +36,10 @@ struct Args {
     /// Duration for lease
     #[clap(short, long, env, default_value_t = 10)]
     lease_secs: u64,
+
+    /// Cooldown duration in seconds (default 300 = 5 minutes)
+    #[clap(long, env, default_value_t = 300)]
+    cooldown_secs: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -127,6 +131,10 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Cooldown tracking for all alert actions - HashMap to store last processed timestamp for each alert fingerprint
+    let mut alert_cooldown: HashMap<String, Instant> = HashMap::new();
+    let cooldown_duration = Duration::from_secs(args.cooldown_secs); // Configurable cooldown duration
+
     // main loop
     loop {
         interval_timer.tick().await;
@@ -138,6 +146,21 @@ async fn main() -> Result<()> {
                     if args.alert_names.contains(&alert.labels.alertname)
                         && alert.status.state == "active"
                     {
+                        // Check if this alert is on cooldown (less than configured time since last processed)
+                        let now = Instant::now();
+                        let should_process = match alert_cooldown.get(&alert.fingerprint) {
+                            Some(last_processed) => {
+                                // If more than the cooldown duration has passed since last processed, allow processing
+                                now.duration_since(*last_processed) > cooldown_duration
+                            }
+                            None => true, // No cooldown record, so process it
+                        };
+
+                        if !should_process {
+                            info!("Skipping alert {} - on cooldown", alert.fingerprint);
+                            continue;
+                        }
+
                         // Check for action label - default to delete_pod if not specified
                         let action = alert.labels.action.as_deref().unwrap_or("delete_pod");
 
@@ -182,6 +205,9 @@ async fn main() -> Result<()> {
                                 warn!("Unknown action '{}' in alert {}", action, alert.fingerprint);
                             }
                         }
+
+                        // Mark this alert as processed (add to cooldown)
+                        alert_cooldown.insert(alert.fingerprint.clone(), now);
                     }
                 }
             }
