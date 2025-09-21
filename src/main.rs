@@ -36,10 +36,6 @@ struct Args {
     /// Duration for lease
     #[clap(short, long, env, default_value_t = 10)]
     lease_secs: u64,
-
-    /// Webhook URL to send alerts to
-    #[clap(long, env)]
-    webhook_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -57,9 +53,10 @@ struct AlertStatus {
 #[derive(Debug, Deserialize, Serialize)]
 struct Labels {
     alertname: String,
-    pod: Option<String>,       // Pod might be missing in some alerts
-    namespace: Option<String>, // Namespace might be missing in some alerts
-    action: Option<String>,    // Action to take: delete_pod or webhook
+    pod: Option<String>,         // Pod might be missing in some alerts
+    namespace: Option<String>,   // Namespace might be missing in some alerts
+    action: Option<String>,      // Action to take: delete_pod or webhook
+    webhook_url: Option<String>, // Webhook URL for this specific alert
 }
 
 async fn get_alerts(alertmanager_url: &str) -> Result<Vec<Alert>, Box<dyn Error>> {
@@ -162,10 +159,11 @@ async fn main() -> Result<()> {
                                 }
                             }
                             "webhook" => {
-                                if let Some(webhook_url) = &args.webhook_url {
+                                // Get webhook URL from alert label
+                                if let Some(url) = &alert.labels.webhook_url {
                                     // Send webhook with alert data
                                     let client = HttpClient::new();
-                                    let resp = client.post(webhook_url).json(&alert).send().await;
+                                    let resp = client.post(url).json(&alert).send().await;
                                     match resp {
                                         Ok(_) => {
                                             info!("Sent webhook for alert {}", alert.fingerprint)
@@ -173,7 +171,10 @@ async fn main() -> Result<()> {
                                         Err(err) => error!("Failed to send webhook: {}", err),
                                     }
                                 } else {
-                                    error!("Webhook URL not configured but action is webhook");
+                                    error!(
+                                        "No webhook URL specified in alert {}",
+                                        alert.fingerprint
+                                    );
                                 }
                             }
                             _ => {
