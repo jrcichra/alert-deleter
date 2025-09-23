@@ -1,4 +1,4 @@
-# alert-deleter
+# alert-actor
 
 This tool listens to Alertmanager for alerts and performs actions on Kubernetes pods based on the alert labels. It supports two types of actions:
 
