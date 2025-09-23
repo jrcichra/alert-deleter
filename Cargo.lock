@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "alert-deleter"
+name = "alert-actor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
