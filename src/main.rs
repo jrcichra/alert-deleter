@@ -30,7 +30,7 @@ struct Args {
     pod_name: String,
 
     /// Name for lease
-    #[clap(short, long, env, default_value = "alert-deleter")]
+    #[clap(short, long, env, default_value = "alert-actor")]
     lease_name: String,
 
     /// Duration for lease

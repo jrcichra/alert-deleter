@@ -1,4 +1,4 @@
-name: alert-deleter
+name: alert-actor
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
       - name: Prepare
         id: prep
         run: |
-          DOCKER_IMAGE=ghcr.io/jrcichra/alert-deleter
+          DOCKER_IMAGE=ghcr.io/jrcichra/alert-actor
           VERSION=noop
           if [ "${{ github.event_name }}" = "schedule" ]; then
             VERSION=nightly
